@@ -1,9 +1,13 @@
 import { describe, it, expect } from "vitest";
-import { assignIndex, messagesSince, latestIndexOf, type Message } from "./messages";
+import { assignIndex, messagesSince, latestIndexOf, currentRoundMessages, type Message } from "./messages";
 
 const msg = (index: number): Message => ({
   index, role: "philosopher", speakerId: "marx", authorName: "Marx",
   content: `turn ${index}`, createdAt: 0,
+});
+const ask = (index: number): Message => ({
+  index, role: "user", speakerId: "u_1", authorName: "Nadav",
+  content: `question ${index}`, createdAt: 0,
 });
 const thread: Message[] = [msg(0), msg(1), msg(2), msg(3)];
 
@@ -26,5 +30,23 @@ describe("index + since (snapshot core)", () => {
   it("latestIndexOf reports the cursor, -1 when empty", () => {
     expect(latestIndexOf(thread)).toBe(3);
     expect(latestIndexOf([])).toBe(-1);
+  });
+});
+
+describe("currentRoundMessages", () => {
+  it("a single round is the whole transcript", () => {
+    const single = [ask(0), msg(1), msg(2)];
+    expect(currentRoundMessages(single)).toEqual(single);
+  });
+  it("cuts off everything before the most recent question — earlier rounds aren't \"this round\"", () => {
+    const multi = [ask(0), msg(1), msg(2), msg(3), msg(4), ask(5), msg(6)];
+    expect(currentRoundMessages(multi).map((m) => m.index)).toEqual([5, 6]);
+  });
+  it("a question with no answers yet is a round of one", () => {
+    const multi = [ask(0), msg(1), msg(2), msg(3), msg(4), ask(5)];
+    expect(currentRoundMessages(multi).map((m) => m.index)).toEqual([5]);
+  });
+  it("no question at all (malformed) falls back to the whole transcript rather than throwing", () => {
+    expect(currentRoundMessages(thread)).toEqual(thread);
   });
 });

@@ -11,3 +11,15 @@ export function messagesSince(messages: Message[], since?: number | null): Messa
 export function latestIndexOf(messages: Message[]): number {
   return messages.reduce((max, m) => Math.max(max, m.index), -1);
 }
+
+// A round starts at its opening question (a `role: "user"` message) and runs
+// to the end of the transcript. Used to give the model an explicit boundary
+// for "this round" (lib/prompt.ts) instead of leaving it to infer one from a
+// long, undifferentiated transcript spanning every round ever asked.
+export function currentRoundMessages(transcript: Message[]): Message[] {
+  let start = 0;
+  for (let i = transcript.length - 1; i >= 0; i--) {
+    if (transcript[i].role === "user") { start = i; break; }
+  }
+  return transcript.slice(start);
+}
