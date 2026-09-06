@@ -1,0 +1,50 @@
+services:
+  mongo:
+    image: mongo:7.0
+    restart: unless-stopped
+    # Change streams (app real-time updates) require a replica set, even a
+    # single-node one — Atlas already runs as one in production, this makes
+    # local dev match.
+    command: ["--replSet", "rs0", "--bind_ip_all"]
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh --quiet
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # One-shot: initiates the replica set on first start, no-ops on later
+  # restarts (rs.status() already succeeding means it's done). Keeps
+  # `docker compose up` a single command with no manual init step.
+  # The member is advertised as "mongo:27017" (this compose network's name),
+  # which the Next.js app running natively on the host can't resolve — that's
+  # why MONGODB_URI needs `directConnection=true` (see .env.example): it skips
+  # the driver's replica-set topology discovery and just talks to the one host
+  # it was given, which is all a single-node replica set needs anyway.
+  mongo-init:
+    image: mongo:7.0
+    restart: "no"
+    depends_on:
+      mongo:
+        condition: service_healthy
+    entrypoint: >
+      mongosh --host mongo --quiet --eval '
+        try { rs.status(); } catch (e) { rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "mongo:27017" }] }); }
+      '
+
+  mongo-express:
+    image: mongo-express:1.0
+    restart: unless-stopped
+    ports:
+      - "8081:8081"
+    environment:
+      ME_CONFIG_MONGODB_URL: mongodb://mongo:27017/?replicaSet=rs0
+      ME_CONFIG_BASICAUTH: "false"
+    depends_on:
+      - mongo
+
+volumes:
+  mongo_data:

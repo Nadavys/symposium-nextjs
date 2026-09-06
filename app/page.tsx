@@ -1,67 +1,99 @@
-import Image from "next/image";
+"use client";
+
+import { useState, type FormEvent } from "react";
+import { useRouter } from "next/navigation";
+import { getOrCreateUserId, getName } from "../lib/identity";
+import { retryAfterSuffix } from "../lib/format";
+import { usePanel } from "./usePanel";
+import Header from "./components/Header";
 
 export default function Home() {
+  const [question, setQuestion] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const router = useRouter();
+  const panel = usePanel();
+
+  async function start(e: FormEvent) {
+    e.preventDefault();
+    const content = question.trim();
+    if (!content) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const createRes = await fetch("/api/rooms", { method: "POST" });
+      if (createRes.status === 429) {
+        throw new Error(`too many debates started${retryAfterSuffix(createRes.headers.get("Retry-After")) || " — wait a bit and try again"}`);
+      }
+      if (!createRes.ok) throw new Error("failed to create room");
+      const { id } = await createRes.json();
+
+      const askRes = await fetch(`/api/rooms/${id}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId: getOrCreateUserId(), authorName: getName(), content }),
+      });
+      if (askRes.status === 429) {
+        throw new Error(`too many questions${retryAfterSuffix(askRes.headers.get("Retry-After")) || " — wait a bit and try again"}`);
+      }
+      if (!askRes.ok) throw new Error("failed to ask");
+
+      router.push(`/room/${id}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "something went wrong");
+      setBusy(false);
+    }
+  }
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
+    <div className="flex flex-1 flex-col">
+      <Header
+        active="home"
+        meta={{ left: "", center: "", right: "" }}
+      />
+
+      <main className="mx-auto w-full max-w-2xl flex-1 px-6 flex flex-col justify-center pb-24">
+        <div className="flex flex-col gap-12">
+          <div>
+            <h1 className="text-7xl sm:text-9xl leading-[0.9] font-heading font-semibold tracking-tighter italic mb-6">
+              Symposium<span className="text-[var(--color-accent-2)]">.</span>
+            </h1>
+            <p className="font-heading text-2xl sm:text-3xl leading-snug opacity-70 max-w-[20ch]">
+              Four philosophers debate your question in real-time.
+            </p>
+          </div>
+
+          <form onSubmit={start} className="w-full flex flex-col gap-6">
+            <textarea
+              value={question}
+              onChange={(e) => setQuestion(e.target.value)}
+              placeholder="Ask the panel..."
+              rows={2}
+              className="w-full bg-transparent border-b-2 border-[var(--color-text)] py-4 text-2xl font-body placeholder:text-[var(--color-text)]/20 focus-visible:border-[var(--color-accent-2)] transition-colors resize-none"
             />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+            
+            <div className="flex items-center gap-6">
+              <button
+                type="submit"
+                disabled={busy || !question.trim()}
+                className="inline-flex h-14 items-center justify-center bg-[var(--color-text)] px-8 text-lg font-heading font-semibold text-[var(--color-bg)] hover:bg-[var(--color-accent-2)] transition-colors disabled:opacity-30"
+              >
+                {busy ? "STARTING..." : "BEGIN DEBATE"}
+              </button>
+              <a href="/rooms" className="text-xs uppercase tracking-[0.2em] font-bold opacity-40 hover:opacity-100 transition-opacity">
+                Browse Rooms
+              </a>
+            </div>
+            {error && <p className="text-sm text-[var(--color-accent-2)] font-semibold uppercase">{error}</p>}
+          </form>
+
+          <div className="flex flex-wrap gap-x-8 gap-y-2 pt-8 border-t border-[var(--color-divider)]">
+            {panel.map((p) => (
+              <span key={p.id} className="text-xs uppercase tracking-widest font-bold opacity-30">
+                {p.name}
+              </span>
+            ))}
+          </div>
         </div>
       </main>
     </div>
