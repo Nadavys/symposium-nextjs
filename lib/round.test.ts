@@ -37,7 +37,10 @@ describe("the round loop", () => {
     const repo = makeFakeRepo(question);
     const seen: Record<string, string[]> = {};
     const callModel: CallModel = async (msgs) => {
-      const speaker = msgs[0].content.replace("persona:", "");
+      // The system prompt is the raw persona string plus whatever framing text
+      // buildTurnMessages appends after it — take only the first line so this
+      // stays robust to that framing text changing.
+      const speaker = msgs[0].content.split("\n")[0].replace("persona:", "");
       seen[speaker] = ["nietzsche", "marx", "beauvoir", "foucault"].filter((p) =>
         msgs[1].content.includes(`[${p[0].toUpperCase()}${p.slice(1)}]`));
       return `${speaker} responds`;

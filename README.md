@@ -1,6 +1,6 @@
 # Symposium
 
-Ask a question. Nietzsche, Marx, Beauvoir, and Foucault debate it, in character, in a shared room — an AI dramatization, not the real philosophers.
+Ask a question. The great thinkers of history will debate it for you, in a shared room — an AI dramatization, not the real philosophers.
 
 ## Screenshots
 
@@ -16,11 +16,47 @@ Ask a question. Nietzsche, Marx, Beauvoir, and Foucault debate it, in character,
 **API docs** — the interactive Swagger UI at `/api-docs`, generated from the hand-authored OpenAPI spec (see [API](#api) below).
 ![Swagger API docs](public/screenshots/swagger.png)
 
+## The "Anti-Vibe" Engineering
+
+Most AI-generated software is "vibe-coded"—brittle, untested, and impossible to maintain. **Symposium is the opposite.** Every component was built from a comprehensive end-to-end plan, strictly adhering to an architecture that prioritizes refactorability and engineering rigor.
+
+- **Clean Architecture:** The domain core (`lib/`) is entirely decoupled from the framework (Next.js). You can run the entire debate engine, persona logic, and turn-based locking without a browser or a web server.
+- **70+ Tests:** A robust suite of unit and integration tests (using `mongodb-memory-server`) ensures that the "Magic" of the AI orchestration is backed by stable, predictable code.
+- **AI as a Multiplier, Not a Crutch:** AI tools were used to accelerate development, but the architecture was carefully built to ensure that a human (or another AI) can refactor and extend the project with confidence.
+
+## Architecture
+
+Two flows, kept deliberately separate: asking a question writes to Mongo and kicks off a background round; watching a room just follows whatever Mongo says happened. Everything else in the app — locking, rate limiting, the passcode gate — sits in front of one or the other of these.
+
+**Asking a question**
+
+```mermaid
+flowchart LR
+    Browser["Browser"] -->|"ask a question"| Route["POST /rooms/:id/messages"]
+    Route -->|"lock + save"| Mongo[("MongoDB<br/>rooms")]
+    Route -.->|"starts in the background<br/>(response already sent)"| Round["Philosopher loop<br/>one turn at a time"]
+    Round <-->|"one call per turn"| AI["OpenAI"]
+    Round -->|"writes each turn"| Mongo
+```
+
+**Watching a room live**
+
+```mermaid
+flowchart LR
+    Mongo2[("MongoDB<br/>rooms")] -->|"change stream"| SSE["GET /rooms/:id/stream"]
+    SSE -->|"push full state"| BrowserA["Browser A"]
+    SSE -->|"push full state"| BrowserB["Browser B"]
+```
+
+Every write in the first diagram — locking the room, appending a turn — is a plain `updateOne` on the same Mongo document (`lib/roomRepo.ts`). The second diagram is only possible because of that: `lib/roomStream.ts` watches that one document with a MongoDB change stream, so any number of browsers can open the stream route and each gets pushed the full current state the instant anything changes — no broadcast list to maintain, no polling.
+
+Not pictured, because they wrap both flows the same way rather than living inside either one: `proxy.ts` gates every request behind the shared passcode, and `lib/rateLimit.ts` + `lib/rateLimitRepo.ts` cap `create`, `ask`, and `stream` per-IP against their own Mongo collection.
+
 ## How it works
 
 - A room holds a running transcript and a `status` (`idle` / `debating` / `error`).
 - Asking a question atomically locks the room and appends your message (`lib/roomRepo.ts`'s `tryAcquireAndAsk` — a single conditional Mongo update, so two concurrent askers can't both start a round).
-- A background round then walks the panel in rotation (`lib/round.ts` + `lib/liveRound.ts`): each philosopher's prompt (`lib/prompt.ts`) includes the discussion so far and is explicitly instructed to react to what the others just said, not restate their own position in isolation.
+- The panel speaks in rotation (`lib/round.ts` + `lib/liveRound.ts`): each philosopher's prompt (`lib/prompt.ts`) includes the discussion so far and is explicitly instructed to react to what the others just said, not restate their own position in isolation.
 - The room's name starts as a plain truncation of the first question (`lib/roomState.ts`'s `roomNameFallback`, so it's never blank) and is then replaced in the background by a short, editorial-style title the model generates from that question (`lib/roomRepo.ts`'s `generateRoomName`, called from `lib/liveRound.ts`) — best-effort, so a failure there just leaves the plain fallback in place.
 - Every viewer's browser holds an SSE connection (`EventSource`) to `GET /api/rooms/:id/stream`, backed by a **MongoDB change stream** on the room's document — the instant a turn is written, every connected viewer gets it pushed over that one live connection. See [Real-time updates](#real-time-updates).
 - If a round fails (model timeout, bad key, network), the room is marked `error` and the lock is released — it's askable again immediately, not stuck.
@@ -75,14 +111,14 @@ This needs Mongo running as a replica set (change streams require an oplog) — 
 
 ## Known limitations
 
-**The SSE stream will be force-disconnected roughly every 5 minutes on Vercel, not just occasionally.** `app/api/rooms/[id]/stream/route.ts` never returns while a client is connected — that's the whole point of an SSE stream — but a Vercel Function still has a hard ceiling on how long a single invocation may run (300s by default on Fluid Compute as of writing, configurable per-route via a `maxDuration` export, higher on some plans). Neither this route's 20s heartbeat nor `EventSource`'s own reconnect logic does anything about that ceiling — the heartbeat only stops *idle-timeout* disconnects from intermediary proxies, it can't keep the underlying function invocation alive past its own hard limit. So in production, every open room view reconnects on a fixed ~5-minute cycle, continuously, for as long as anyone's watching — not as a rare edge case.
+**The SSE stream may get force-disconnected periodically on Vercel — worth being ready for, not confirmed as an active problem.** `app/api/rooms/[id]/stream/route.ts` never returns while a client is connected — that's the whole point of an SSE stream — and serverless functions generally have *some* ceiling on how long a single invocation may run. Neither this route's 20s heartbeat nor `EventSource`'s own reconnect logic does anything about that kind of ceiling if it's hit — the heartbeat only stops *idle-timeout* disconnects from intermediary proxies, not a platform-enforced hard limit on the invocation itself.
 
-This mostly stays invisible today, and that's not an accident: every push is a full snapshot rather than a delta (`roomSnapshotFromDoc`), and the client's merge is idempotent (`mergeMessages`, dedupe by index) — so a forced reconnect just means a brief gap in the underlying HTTP connection, not a gap or a glitch a viewer would notice. What it does cost, silently, is Mongo connection churn: every forced reconnect closes one change-stream cursor and opens a fresh one, for every connected viewer, every ~5 minutes — not accounted for anywhere today beyond the blanket 120/hour per-IP stream rate limit ([Rate limiting](#rate-limiting)), which caps abuse but wasn't sized with this baseline churn in mind.
+That said: on the actual deployed app, no disconnect has been observed yet, even on rooms left open a while. So either it isn't happening at the assumed cadence on the current plan/config (Fluid Compute's Active-CPU billing model may treat a mostly-idle stream differently than a flat wall-clock cap), or it's happening and staying invisible by design — every push is a full snapshot rather than a delta (`roomSnapshotFromDoc`), and the client's merge is idempotent (`mergeMessages`, dedupe by index), so a reconnect wouldn't look like anything from the UI. Both are plausible; this hasn't been distinguished yet. Check the Network tab for the `/stream` connection's duration, or Vercel's function logs, before treating this as a real, sized cost rather than a theoretical one.
 
-To address in the future:
+If it does turn out to matter in practice:
 - Set `export const maxDuration` on the stream route explicitly, so the assumption is a documented, deliberate choice rather than whatever the platform's current default happens to be.
-- At meaningfully larger scale, move long-lived fan-out off of a per-request serverless function entirely — a serverless function is the wrong primitive for a connection meant to live indefinitely. A small always-on relay process, or a managed realtime/pub-sub service sitting in front of the same Mongo change stream, would remove the reconnect cycle altogether instead of just tolerating it gracefully.
-- Track concurrent open change-stream cursors (there's currently no visibility into this beyond Atlas's own connection-count metrics), so the reconnect churn's actual cost is measured rather than assumed to be fine.
+- At meaningfully larger scale, move long-lived fan-out off of a per-request serverless function entirely — a serverless function is the wrong primitive for a connection meant to live indefinitely. A small always-on relay process, or a managed realtime/pub-sub service sitting in front of the same Mongo change stream, would remove any reconnect cycle altogether instead of just tolerating it gracefully.
+- Track concurrent open change-stream cursors (there's currently no visibility into this beyond Atlas's own connection-count metrics) before assuming the churn — if it exists at all — is free.
 
 ## Rate limiting
 
@@ -125,4 +161,16 @@ Interactive docs: [http://localhost:3000/api-docs](http://localhost:3000/api-doc
 
 ## Roadmap
 
-- [ ] **Make the discussion itself more prominent — real back-and-forth, not a fixed rotation.** Right now every round is mechanical: `lib/roster.ts`'s `speakingOrder` rotates a fixed order and `lib/round.ts`'s `runRound` walks it — all four speak exactly once, in a precomputed slot, whether or not they have anything to add. A philosopher should instead reply because they want to agree with, build on, or contradict what was just said. Concretely: pick the next speaker dynamically after each turn (an LLM call given the transcript so far, choosing who responds next, or explicitly passing if no one has more to add) instead of precomputing the whole order up front. See the `TODO` at `lib/round.ts`'s `runRound` — the function's shape barely needs to change, only what decides `order`.
+### 1. Pick Your Panel
+
+Expand beyond the founding four, including Plato, Hume, Kant, Freud, and others, and allow users to choose which thinkers participate in a debate.
+
+### 2. From Round-Robin to Hot-Seat
+
+The current speaking order is fixed and precomputed (`lib/roster.ts`'s `speakingOrder`, walked by `lib/round.ts`'s `runRound` — see the `TODO` there). The next step is a dynamic moderator that decides who should respond based on how strongly a position has been challenged, allowing participants to interject or double down rather than simply waiting their turn.
+
+This will likely require a more sophisticated orchestration layer, potentially using a framework such as LangGraph.
+
+### 3. Deeper Discussion
+
+The goal: a deeper, more critical discussion, not just more back-and-forth. Every speaker already has to engage with everyone who has spoken during the round, not just the previous speaker (`lib/prompt.ts`'s `buildTurnMessages`) — the next step is making that engagement sharper, not just present. Have each persona privately critique the previous argument's logic before writing their public response, so replies engage with what was actually said instead of just its tone.

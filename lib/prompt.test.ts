@@ -19,23 +19,23 @@ describe("attributed prompt builder (the reaction mechanism)", () => {
     expect(attributeLine(transcript[0])).toBe("[Nadav asked]: Is the self free?");
     expect(attributeLine(transcript[1])).toBe("[Nietzsche]: The self is a creation.");
   });
-  it("uses the speaker's persona as the system prompt", () => {
+  it("uses the speaker's persona as the base of the system prompt", () => {
     const [system] = buildTurnMessages({ transcript, speakerId: "foucault", personas });
     expect(system.role).toBe("system");
-    expect(system.content).toBe(personas.foucault);
+    expect(system.content).toContain(personas.foucault);
   });
   it("feeds the next speaker every prior turn, attributed, and cues them to respond", () => {
     const [, user] = buildTurnMessages({ transcript, speakerId: "foucault", personas });
     expect(user.content).toContain("[Nietzsche]: The self is a creation.");
     expect(user.content).toContain("[Marx]: The self is produced by its conditions.");
     expect(user.content).toContain("[Nadav asked]: Is the self free?");
-    expect(user.content).toContain("Now respond as Foucault, engaging directly");
+    expect(user.content).toContain("Now respond as Foucault.");
   });
   it("centers the response on the round's topic while still requiring every prior speaker this round to be engaged, not just the most recent", () => {
     const [, user] = buildTurnMessages({ transcript, speakerId: "foucault", personas });
-    expect(user.content).toContain("Center your response on that question");
-    expect(user.content).toContain("engage every other philosopher who has already answered it this round");
-    expect(user.content).toContain("do not respond only to whoever spoke last and ignore the rest");
+    expect(user.content).toContain("Focus primarily on the question posed in THIS ROUND'S TOPIC above");
+    expect(user.content).toContain("you must also synthesize or challenge the contributions of everyone else who has spoken in this round so far");
+    expect(user.content).toContain("Address your peers by name");
   });
 
   it("presents the round's opening question as the explicit topic, separate from who's answered it so far", () => {
@@ -61,7 +61,7 @@ describe("attributed prompt builder (the reaction mechanism)", () => {
     // Round 2's question is the explicit topic; its one answer so far is called out separately.
     expect(user.content).toContain("THIS ROUND'S TOPIC — the question you must respond to:\n[Nadav asked]: So is there any real choice?");
     expect(user.content).toContain("Already answered this round —\n[Nietzsche]: Choice is the strong imposing form on chaos.");
-    expect(user.content).toContain("do not drift back into earlier rounds — they're already resolved");
+    expect(user.content).toContain("Do not drift back into re-litigating earlier rounds");
     // The earlier-rounds block appears before the current round's topic in the prompt.
     expect(user.content.indexOf("Earlier rounds")).toBeLessThan(user.content.indexOf("THIS ROUND'S TOPIC"));
   });
